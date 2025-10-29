@@ -190,7 +190,8 @@ Check the log output for specific errors.
   4. Submit a pull request
 
 ## License
-MIT License - see LICENSE file for details
+This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0).  
+You are free to use and modify the code for non-commercial purposes, but you must give attribution and distribute any derivative works under the same license. See LICENSE for details.
 
 ## Acknowledgments
   - Built with ytmusicapi

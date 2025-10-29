@@ -4,16 +4,7 @@ import os
 import sys
 import time
 import re
-import logging
 from ytmusicapi import YTMusic
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%H:%M:%S'
-)
-logger = logging.getLogger(__name__)
 
 # Security warning
 SECURITY_WARNING = """
@@ -201,7 +192,7 @@ def import_playlist_from_csv(yt, csv_file):
             for row in reader:
                 # Get playlist name
                 if has_playlistname:
-                    playlist_name = row['PlaylistName'].strip()
+                    pplaylist_name = (row.get('PlaylistName') or '').strip()
                 else:
                     playlist_name = default_playlist_name
                 

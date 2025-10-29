@@ -23,23 +23,24 @@ Main script: `playlist_importer.py`
 
 ## Installation
 1. Clone the repository
-    `git clone https://github.com/yourusername/yt-music-importer.git`
-    `cd yt-music-importer`
+    git clone https://github.com/yourusername/yt-music-importer.git
+    cd yt-music-importer
 
 2. Install dependencies
-    `pip install ytmusicapi`
+    pip install ytmusicapi
 
 3. Optional: For Spotify support
-    `pip install spotipy`
+    pip install spotipy
 
 ## Authentication
 1. Run the interactive setup to authenticate with YouTube Music:
     `python playlist_importer.py --setup`
 2. Follow the prompts to copy your browser's request headers. This creates browser.json which contains your authentication cookies.
+
 ⚠️ SECURITY WARNING: browser.json contains sensitive authentication data. Never commit or share this file!
 
 ## Manual Authentication (Alternative)
-    `ytmusicapi browser`
+    ytmusicapi browser
 This creates browser.json in the current directory.
 
 ## How to get auth headers

@@ -62,6 +62,9 @@ Search fallback: when no videoId is available the script uses ytmusicapi search 
   - `python playlist_importer.py --spotify https://open.spotify.com/playlist/...`
 - Interactive auth setup:
   - `python playlist_importer.py --setup`
+  - `(Paste headers, press Ctrl+D(Unix)/Ctrl+Z(Windows) when done)`
+- Import and create new playlists:
+  - `python playlist_importer.py --no-append *.csv`
 
 ## Behavior notes & troubleshooting
 - The script expects `browser.json` in the working directory. If missing it exits with instructions to run `--setup` or `ytmusicapi browser`.

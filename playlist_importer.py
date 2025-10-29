@@ -21,47 +21,70 @@ def setup_authentication():
     print("4. Go to the Network tab")
     print("5. Refresh the page")
     print("6. Find a request to 'music.youtube.com/youtubei/v1/browse'")
-    print("7. Right-click → Copy → Copy as cURL (bash)")
-    print("\nPaste the cURL command below (it will be very long):")
-    print("(Press Enter twice when done)\n")
+    print("7. Right-click → Copy → Copy Request Headers")
+    print("\nPaste the request headers below:")
+    print("(Press Ctrl+D or Ctrl+Z (Windows) when done)\n")
     
     lines = []
-    while True:
-        line = input()
-        if not line and lines:
-            break
-        lines.append(line)
+    try:
+        while True:
+            line = input()
+            lines.append(line)
+    except EOFError:
+        pass
     
-    curl_command = ' '.join(lines)
+    raw_headers = '\n'.join(lines)
     
-    # Parse headers from cURL command
+    # Parse raw request headers format
     headers = {}
+    current_header = None
     
-    # Extract User-Agent
-    ua_match = re.search(r"-H '([Uu]ser-[Aa]gent: [^']+)'", curl_command)
-    if ua_match:
-        headers['User-Agent'] = ua_match.group(1).split(': ', 1)[1]
+    for line in raw_headers.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Check if this is a header line (contains ':')
+        if ':' in line and not line.startswith(' '):
+            key, value = line.split(':', 1)
+            key = key.strip()
+            value = value.strip()
+            
+            # Map header names to what ytmusicapi expects
+            if key.lower() == 'user-agent':
+                headers['User-Agent'] = value
+            elif key.lower() == 'cookie':
+                headers['Cookie'] = value
+            elif key.lower() == 'x-goog-authuser':
+                headers['X-Goog-AuthUser'] = value
+            elif key.lower() == 'authorization':
+                headers['Authorization'] = value
+            elif key.lower() == 'x-goog-visitor-id':
+                headers['X-Goog-Visitor-Id'] = value
+            
+            current_header = key
+        elif current_header and line:
+            # Continuation of previous header (multi-line)
+            if current_header.lower() == 'cookie':
+                headers['Cookie'] += ' ' + line
     
-    # Extract Cookie
-    cookie_match = re.search(r"-H '([Cc]ookie: [^']+)'", curl_command)
-    if cookie_match:
-        headers['Cookie'] = cookie_match.group(1).split(': ', 1)[1]
-    
-    # Extract X-Goog-AuthUser
-    auth_match = re.search(r"-H '(X-Goog-AuthUser: [^']+)'", curl_command)
-    if auth_match:
-        headers['X-Goog-AuthUser'] = auth_match.group(1).split(': ', 1)[1]
-    
-    if not headers.get('Cookie') or 'SAPISID' not in headers['Cookie']:
-        print("\n❌ ERROR: Could not parse headers correctly!")
-        print("Make sure you copied the full cURL command.")
+    # Validate we have the required headers
+    if not headers.get('Cookie') or 'SAPISID' not in headers.get('Cookie', ''):
+        print("\n❌ ERROR: Could not find required cookies!")
+        print("Make sure you copied the full request headers including the Cookie line.")
+        print("The Cookie should contain SAPISID.")
         return False
+    
+    if not headers.get('User-Agent'):
+        print("\n⚠ WARNING: User-Agent not found, using default")
+        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     
     # Save to browser.json
     with open('browser.json', 'w') as f:
         json.dump(headers, f, indent=2)
     
     print("\n✓ Authentication saved to browser.json")
+    print(f"✓ Found {len(headers)} headers")
     return True
 
 def search_youtube_music(yt, title, artist):
@@ -205,25 +228,45 @@ def import_playlist_from_csv(yt, csv_file):
         traceback.print_exc()
         return None
 
-def import_playlist(yt, playlist_name, songs):
+def import_playlist(yt, playlist_name, songs, append=True):
     """
     Import a single playlist to YouTube Music.
+    If append=True and playlist exists, adds songs to existing playlist.
+    If append=False, always creates a new playlist.
     """
     print(f"\n{'='*70}")
     print(f"Processing: {playlist_name} ({len(songs)} songs)")
     print('='*70)
     
     try:
-        # Create the playlist
-        playlist_id = yt.create_playlist(
-            title=playlist_name,
-            description=f"Imported playlist - {len(songs)} songs"
-        )
-        print(f"✓ Created playlist (ID: {playlist_id})")
+        playlist_id = None
+        
+        # Check if playlist already exists (if append mode)
+        if append:
+            print("  Checking for existing playlist...")
+            try:
+                existing_playlists = yt.get_library_playlists(limit=None)
+                for pl in existing_playlists:
+                    if pl.get('title') == playlist_name:
+                        playlist_id = pl.get('playlistId')
+                        print(f"✓ Found existing playlist (ID: {playlist_id})")
+                        print(f"  Will append songs to existing playlist")
+                        break
+            except Exception as e:
+                print(f"  Warning: Could not check for existing playlists: {e}")
+        
+        # Create new playlist if doesn't exist
+        if not playlist_id:
+            playlist_id = yt.create_playlist(
+                title=playlist_name,
+                description=f"Imported playlist - {len(songs)} songs"
+            )
+            print(f"✓ Created new playlist (ID: {playlist_id})")
         
         successful = 0
         failed = 0
         searched = 0
+        skipped = 0
         failed_songs = []
         
         for i, song in enumerate(songs, 1):
@@ -262,13 +305,15 @@ def import_playlist(yt, playlist_name, songs):
                 
             except Exception as e:
                 error_msg = str(e)
-                failed += 1
                 
                 # Check for success reported as error (ytmusicapi quirk)
                 if 'STATUS_SUCCEEDED' in error_msg:
                     successful += 1
-                    failed -= 1
+                # Check if song already in playlist
+                elif 'already' in error_msg.lower() or 'duplicate' in error_msg.lower():
+                    skipped += 1
                 else:
+                    failed += 1
                     failed_songs.append({
                         'title': song['title'],
                         'artists': song['artists'],
@@ -282,6 +327,8 @@ def import_playlist(yt, playlist_name, songs):
         print(f"  ✓ Successfully added: {successful}/{len(songs)} songs")
         if searched > 0:
             print(f"  🔍 Songs found by search: {searched}")
+        if skipped > 0:
+            print(f"  ⏭ Skipped (already in playlist): {skipped}")
         if failed > 0:
             print(f"  ✗ Failed: {failed} songs")
             print(f"\nFailed songs:")
@@ -294,7 +341,7 @@ def import_playlist(yt, playlist_name, songs):
         return True
         
     except Exception as e:
-        print(f"✗ ERROR creating playlist '{playlist_name}': {e}")
+        print(f"✗ ERROR processing playlist '{playlist_name}': {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -331,8 +378,12 @@ AUTHENTICATION:
     parser.add_argument('files', nargs='*', help='CSV file(s) to import')
     parser.add_argument('--setup', action='store_true', help='Run interactive authentication setup')
     parser.add_argument('--spotify', help='Import from Spotify playlist URL')
+    parser.add_argument('--no-append', action='store_true', help='Always create new playlists instead of appending to existing ones')
     
     args = parser.parse_args()
+    
+    # Determine append mode (default is True, unless --no-append is specified)
+    append_mode = not args.no_append
     
     # Handle setup mode
     if args.setup:
@@ -365,7 +416,7 @@ AUTHENTICATION:
         print(f"\nImporting from Spotify: {args.spotify}")
         playlist_data = parse_spotify_playlist(args.spotify)
         if playlist_data:
-            import_playlist(yt, playlist_data['name'], playlist_data['songs'])
+            import_playlist(yt, playlist_data['name'], playlist_data['songs'], append=append_mode)
         return
     
     # Handle CSV imports
@@ -404,7 +455,7 @@ AUTHENTICATION:
         playlists = import_playlist_from_csv(yt, csv_file)
         if playlists:
             for playlist_name, songs in playlists.items():
-                if import_playlist(yt, playlist_name, songs):
+                if import_playlist(yt, playlist_name, songs, append=append_mode):
                     total_playlists += 1
     
     print("\n" + "="*70)

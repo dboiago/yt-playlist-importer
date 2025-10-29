@@ -181,7 +181,10 @@ def import_playlist_from_csv(yt, csv_file):
     try:
         with open(csv_file, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            headers = reader.fieldnames
+            headers = reader.fieldnames or []
+            # Ensure theres always a list for membership checks
+            if headers is None:
+                headers = []
             
             # Detect CSV format
             has_mediaid = 'MediaId' in headers
@@ -210,11 +213,11 @@ def import_playlist_from_csv(yt, csv_file):
                 title = row.get('Title', '').strip()
                 artists = row.get('Artists', '').strip() or row.get('Artist', '').strip()
                 
-                # Method 1: Direct MediaId/VideoId
+                # Method 1: Direct MediaId/VideoId (use .get to avoid KeyError / None.strip())
                 if has_mediaid:
-                    video_id = row['MediaId'].strip()
+                    video_id = (row.get('MediaId') or '').strip()
                 elif 'VideoId' in headers:
-                    video_id = row['VideoId'].strip()
+                    video_id = (row.get('VideoId') or '').strip()
                 
                 # Method 2: Parse from URL
                 if not video_id and has_url:
@@ -266,7 +269,9 @@ def import_playlist(yt, playlist_name, songs, append=True):
             try:
                 existing_playlists = yt.get_library_playlists(limit=None)
                 for pl in existing_playlists:
-                    if pl.get('title') == playlist_name:
+                    existing_title = (pl.get('title') or '').strip().casefold()
+                    target_title = (playlist_name or '').strip().casefold()
+                    if existing_title == target_title:
                         playlist_id = pl.get('playlistId')
                         print(f"✓ Found existing playlist (ID: {playlist_id})")
                         print(f"  Will append songs to existing playlist")

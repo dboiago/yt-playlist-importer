@@ -31,12 +31,13 @@ Main script: `playlist_importer.py`
         Verify that the request looks like this: Status : 200, Method : POST, Domain : music.youtube.com, File : browse?...
         Copy the request headers (right click > copy > copy request headers)
 
+    ```text
     | [] | {} /browse     x | ||  +  o  o  | All HTML CSS JS XHR Fonts Images Media WS Other | [✓] Disable Cache |
     --------------------------------------------------------------------------------------------------------------
     | Status | Method | Domain           | File                     | Initiator | Type | Thransfered | Size      |
     --------------------------------------------------------------------------------------------------------------
     |   200  | POST   | music.youtbe.com | browse?prettyPrint=fales | fetch     | json | 16.74 kB    | 246.48 kB |
-
+    ```
 
     Chromium based (Chrome/Edge):
         Verify that the request looks like this: Status : 200, Name : browse?...

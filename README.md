@@ -1,6 +1,7 @@
 # YouTube Music Playlist Importer
 
 A Python tool for importing playlists to YouTube Music from CSV files, Spotify playlists, and other sources.
+
 Main script: `playlist_importer.py`
 
 ## Features
@@ -104,26 +105,34 @@ This creates browser.json in the current directory.
 
 ## Import from Spotify
 - Requires SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET environment variables
-    `export SPOTIPY_CLIENT_ID='your_client_id'`
-    `export SPOTIPY_CLIENT_SECRET='your_client_secret'`
-
-    `python playlist_importer.py --spotify "https://open.spotify.com/playlist/..."`
+    ```text
+    export SPOTIPY_CLIENT_ID='your_client_id'
+    export SPOTIPY_CLIENT_SECRET='your_client_secret'
+    python playlist_importer.py --spotify "https://open.spotify.com/playlist/..."
+    ```
 
 ## CSV Formats
 The importer supports multiple CSV formats:
  - Kreate Format (Full)
+    ```text
     PlaylistBrowseId,PlaylistName,MediaId,Title,Artists,Duration,ThumbnailUrl
     ,My Playlist,dQw4w9WgXcQ,Song Title,Artist Name,180,https://...
+    ```
 - Simple Format
+    ```text
     Title,Artist
     Song Title,Artist Name
     Another Song,Another Artist
+    ```
 - URL Format
+    ```text
     URL
     https://music.youtube.com/watch?v=dQw4w9WgXcQ
     https://www.youtube.com/watch?v=dQw4w9WgXcQ
+    ```
 
 ## Command-Line Options
+```text
 usage: playlist_importer.py [-h] [--setup] [--spotify SPOTIFY] [--no-append] [files ...]
 
 positional arguments:
@@ -134,6 +143,7 @@ optional arguments:
   --setup              Run interactive authentication setup
   --spotify SPOTIFY    Import from Spotify playlist URL
   --no-append          Always create new playlists instead of appending
+```
 
 ## Behavior notes & troubleshooting
 - Authentication Issues

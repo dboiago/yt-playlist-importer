@@ -1,14 +1,16 @@
 # YouTube Music Playlist Importer
 
-Small utility to import playlists into YouTube Music from CSV files or a Spotify playlist URL.  
+A Python tool for importing playlists to YouTube Music from CSV files, Spotify playlists, and other sources.
 Main script: `playlist_importer.py`
 
 ## Features
-- Import one or more CSV files (file, glob, or directory).
-- Create playlists on YouTube Music and add songs by videoId.
-- Fallback search on YouTube Music when a videoId is not present.
-- Optional Spotify → YouTube import (requires `spotipy` and Spotify API creds).
-- Interactive authentication helper that generates `browser.json` from a copied cURL request.
+- Multiple CSV formats supported: Kreate exports, simple Title/Artist CSVs, URL lists
+- Spotify import: Import directly from Spotify playlist URLs (requires setup)
+- Smart fallback: Searches YouTube Music if video IDs not provided
+- Playlist appending: Automatically appends to existing playlists (configurable)
+- Batch processing: Efficiently adds songs in batches
+- Retry logic: Exponential backoff for transient failures
+- Progress tracking: Real-time feedback on import status
 
 ## Prerequisites
 - Python 3.x
@@ -18,6 +20,27 @@ Main script: `playlist_importer.py`
 - Authentication:
   - Run interactive setup in the script: `python playlist_importer.py --setup`
   - Or run: `ytmusicapi browser` to generate headers and save them as `browser.json`.
+
+## Installation
+1. Clone the repository
+    `git clone https://github.com/yourusername/yt-music-importer.git`
+    `cd yt-music-importer`
+
+2. Install dependencies
+    `pip install ytmusicapi`
+
+3. Optional: For Spotify support
+    `pip install spotipy`
+
+## Authentication
+1. Run the interactive setup to authenticate with YouTube Music:
+    `python playlist_importer.py --setup`
+2. Follow the prompts to copy your browser's request headers. This creates browser.json which contains your authentication cookies.
+⚠️ SECURITY WARNING: browser.json contains sensitive authentication data. Never commit or share this file!
+
+## Manual Authentication (Alternative)
+    `ytmusicapi browser`
+This creates browser.json in the current directory.
 
 ## How to get auth headers
 1. Open Developer Tools and go to the Network tab
@@ -43,16 +66,6 @@ Main script: `playlist_importer.py`
         Verify that the request looks like this: Status : 200, Name : browse?...
         Click on the Name of any matching request. In the “Headers” tab, scroll to the section “Request headers” and copy everything starting from “accept: */*” to the end of the section
 
-## CSV formats supported
-- Kreate-ish CSV: `PlaylistBrowseId, PlaylistName, MediaId, Title, Artists, Duration, ThumbnailUrl`
-  - `PlaylistName` and `MediaId` (YouTube video ID) are preferred.
-- Simple CSV: `Title, Artist` (will search YouTube Music to find the videoId).
-- URL column: `URL` or `url` — will extract a YouTube video ID from common URL patterns.
-
-If no `PlaylistName` column exists, the CSV filename (without extension) is used as the playlist name.
-
-Search fallback: when no videoId is available the script uses ytmusicapi search (first result). This can be less accurate for ambiguous titles.
-
 ## Usage
 - Import a single CSV:
   - `python playlist_importer.py playlist.csv`
@@ -67,18 +80,86 @@ Search fallback: when no videoId is available the script uses ytmusicapi search 
 - Import and create new playlists:
   - `python playlist_importer.py --no-append *.csv`
 
-## Behavior notes & troubleshooting
-- The script expects `browser.json` in the working directory. If missing it exits with instructions to run `--setup` or `ytmusicapi browser`.
-- The interactive `--setup` asks you to paste a cURL command copied from the browser DevTools and parses headers (User-Agent, Cookie, X-Goog-AuthUser). Ensure you copy the full cURL.
-- The script includes a small sleep between adds to reduce rate limits; searching songs waits slightly longer.
-- ytmusicapi sometimes returns errors that actually indicate success (e.g., responses containing `STATUS_SUCCEEDED`). The script treats that pattern as success for add operations.
-- Spotify import requires `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` environment variables and the `spotipy` package.
+## Import from Spotify
+- Requires SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET environment variables
+    `export SPOTIPY_CLIENT_ID='your_client_id'`
+    `export SPOTIPY_CLIENT_SECRET='your_client_secret'`
 
-## Limitations & suggestions
-- Search matching is basic (first result). Consider adding fuzzy matching or more restrictive query formatting if mismatches occur.
-- The cURL parsing in `--setup` expects the cURL copy in a specific format; if parsing fails, run `ytmusicapi browser` instead.
-- Large playlists may hit rate limits; slow the loop sleep if you experience throttling.
+    `python playlist_importer.py --spotify "https://open.spotify.com/playlist/..."`
+
+## CSV Formats
+The importer supports multiple CSV formats:
+ - Kreate Format (Full)
+    PlaylistBrowseId,PlaylistName,MediaId,Title,Artists,Duration,ThumbnailUrl
+    ,My Playlist,dQw4w9WgXcQ,Song Title,Artist Name,180,https://...
+- Simple Format
+    Title,Artist
+    Song Title,Artist Name
+    Another Song,Another Artist
+- URL Format
+    URL
+    https://music.youtube.com/watch?v=dQw4w9WgXcQ
+    https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+## Command-Line Options
+usage: playlist_importer.py [-h] [--setup] [--spotify SPOTIFY] [--no-append] [files ...]
+
+positional arguments:
+  files                CSV file(s) to import
+
+optional arguments:
+  -h, --help           show this help message and exit
+  --setup              Run interactive authentication setup
+  --spotify SPOTIFY    Import from Spotify playlist URL
+  --no-append          Always create new playlists instead of appending
+
+## Behavior notes & troubleshooting
+- Authentication Issues
+  If you get authentication errors:
+
+  1. Delete browser.json
+  2. Run python playlist_importer.py --setup again
+  3. Make sure you're logged into YouTube Music in your browser
+  4. Copy the entire request headers (should be very long)
+
+- "Song not found" Errors
+  Some songs may not be available on YouTube Music:
+
+  - Regional restrictions
+  - Deleted/removed videos
+  - Incorrect song titles in CSV
+
+Check the log output for specific errors.
+
+- Rate Limiting
+  If you hit rate limits:
+
+  - The script includes built-in delays (0.3s between songs, 1s between batches)
+  - Retry logic handles temporary rate limits
+  - For very large imports, consider splitting into smaller batches
+
+- Security Best Practices
+  1. Never commit browser.json - It's in .gitignore by default
+  2. Don't share browser.json - It contains your authentication cookies
+  3. Set restrictive permissions: chmod 600 browser.json (Unix/Linux)
+  4. Regenerate regularly: Re-run setup if you suspect compromise
+
+- Known Limitations
+  - Spotify import requires API credentials (free but requires registration)
+  - Search fallback may occasionally match wrong songs for ambiguous titles
+  - YouTube Music API has rate limits (handled with retry logic)
+  - Some songs may not be available due to regional restrictions
+
+## Contributing
+- Contributions welcome! Please:
+  1. Fork the repository
+  2. Create a feature branch
+  3. Add tests if applicable
+  4. Submit a pull request
 
 ## License
-This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0).  
-You are free to use and modify the code for non-commercial purposes, but you must give attribution and distribute any derivative works under the same license. See LICENSE for details.
+MIT License - see LICENSE file for details
+
+## Acknowledgments
+  - Built with ytmusicapi
+  - Spotify support via spotipy

@@ -4,7 +4,26 @@ import os
 import sys
 import time
 import re
+import logging
 from ytmusicapi import YTMusic
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# Security warning
+SECURITY_WARNING = """
+⚠️  SECURITY WARNING ⚠️
+browser.json contains authentication cookies (SAPISID, etc.)
+Treat it like a password:
+- Add browser.json to .gitignore
+- Never commit or share browser.json
+- Keep file permissions restricted (chmod 600 on Unix)
+"""
 
 def setup_authentication():
     """

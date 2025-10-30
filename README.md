@@ -39,7 +39,7 @@ Main script: `playlist_importer.py`
 1. Clone the repository
     ```bash
     git clone https://github.com/dboiago/yt-playlist-importer.git
-    cd yt-music-importer
+    cd yt-playlist-importer
     ```
 
 2. Install dependencies

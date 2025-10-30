@@ -38,7 +38,7 @@ Main script: `playlist_importer.py`
 ## Installation
 1. Clone the repository
     ```bash
-    git clone https://github.com/yourusername/yt-music-importer.git
+    git clone https://github.com/dboiago/yt-music-importer.git
     cd yt-music-importer
     ```
 

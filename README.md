@@ -90,8 +90,10 @@ This creates browser.json in the current directory.
         Click on the Name of any matching request. In the “Headers” tab, scroll to the section “Request headers” and copy everything starting from “accept: */*” to the end of the section
 
 ## Usage
-- Import a single CSV:
+- Import a single CSV (defualt logging):
   - `python playlist_importer.py playlist.csv`
+- Custom log file
+ - `python playlist_importer.py --log my_import.log *.csv`
 - Import many files (globs or directory):
   - `python playlist_importer.py *.csv`
   - `python playlist_importer.py path\to\csv\folder`
@@ -100,8 +102,12 @@ This creates browser.json in the current directory.
 - Interactive auth setup:
   - `python playlist_importer.py --setup`
   - `(Paste headers, press Ctrl+D(Unix)/Ctrl+Z(Windows) when done)`
+- Public playlist
+  - `python playlist_importer.py --public playlist.csv`
 - Import and create new playlists:
   - `python playlist_importer.py --no-append *.csv`
+- All options
+  - `python playlist_importer.py --public --no-append --log import.log *.csv`
 
 ## Import from Spotify
 - Requires SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET environment variables

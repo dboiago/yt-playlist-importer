@@ -4,6 +4,8 @@ import os
 import sys
 import time
 import re
+import logging
+from functools import wraps
 from ytmusicapi import YTMusic
 
 # Security warning
@@ -15,6 +17,70 @@ Treat it like a password:
 - Never commit or share browser.json
 - Keep file permissions restricted (chmod 600 on Unix)
 """
+
+# In-memory cache for search queries within a run
+SEARCH_CACHE = {}
+
+# Setup logging
+def setup_logging(log_file='playlist_import.log'):
+    """Configure logging to both file and console."""
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+
+    # Remove existing handlers to avoid duplicates when reinitializing
+    if logger.handlers:
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+
+    # File handler
+    fh = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    fh.setLevel(logging.INFO)
+    # Console handler
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+
+    fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
+    fh.setFormatter(fmt)
+    ch.setFormatter(fmt)
+
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
+
+# initialize default logger (can be reinitialized in main with a different file)
+logger = setup_logging()
+
+def retry_on_failure(max_attempts=3, backoff=2):
+    """
+    Retry decorator for network calls with exponential backoff.
+    Retries on requests exceptions, timeouts, connection errors and HTTP 5xx responses.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    # Retry on requests network/connection/timeout errors
+                    retryable = False
+                    if isinstance(e, requests.exceptions.RequestException):
+                        retryable = True
+                    # If exception has 'response' with status_code, treat 5xx as retryable
+                    resp = getattr(e, 'response', None)
+                    if resp is not None and getattr(resp, 'status_code', 0) >= 500:
+                        retryable = True
+
+                    if not retryable or attempt == max_attempts:
+                        # final attempt or non-retryable -> raise
+                        raise
+
+                    wait = backoff ** (attempt - 1)
+                    logger.info(f"    Retry {attempt}/{max_attempts} after {wait}s... ({type(e).__name__})")
+                    time.sleep(wait)
+            return None
+        return wrapper
+    return decorator
 
 def setup_authentication():
     """
@@ -97,23 +163,68 @@ def setup_authentication():
     print(f"✓ Found {len(headers)} headers")
     return True
 
+def normalize_for_search(title, artist):
+    """
+    Normalize title and artist for better search results.
+    Collapses whitespace and formats query for YouTube Music.
+    """
+    # Collapse whitespace
+    title = ' '.join(title.split()) if title else ''
+    artist = ' '.join(artist.split()) if artist else ''
+    
+    # Format: "Title" Artist for better matching
+    if title and artist:
+        return f'"{title}" {artist}'
+    elif title:
+        return f'"{title}"'
+    elif artist:
+        return artist
+    return ''
+
+@retry_on_failure()
 def search_youtube_music(yt, title, artist):
     """
     Search YouTube Music for a song by title and artist.
-    Returns the best matching video ID, or None if not found.
+    Uses an in-memory cache for the normalized query to avoid duplicate searches during a run.
+    Attempts to pick a result that best matches title/artist before falling back to first result.
     """
     try:
-        query = f"{title} {artist}"
-        results = yt.search(query, filter='songs', limit=5)
-        
-        if not results:
+        query = normalize_for_search(title, artist)
+        if not query:
             return None
-        
-        # Return the first result's video ID
-        # Could be made smarter with fuzzy matching, but first result is usually correct
-        return results[0].get('videoId')
+
+        # Cache lookup
+        if query in SEARCH_CACHE:
+            return SEARCH_CACHE[query]
+
+        results = yt.search(query, filter='songs', limit=5)
+        if not results:
+            SEARCH_CACHE[query] = None
+            return None
+
+        # Try to prefer results that contain title or artist tokens (simple heuristic)
+        norm_title = (title or '').casefold()
+        norm_artist = (artist or '').casefold()
+        best = None
+        for r in results:
+            r_title = (r.get('title') or '').casefold()
+            r_artists = ' '.join((a.get('name') for a in r.get('artists', []) if a.get('name'))).casefold()
+            if norm_title and norm_title in r_title:
+                best = r
+                break
+            if norm_artist and norm_artist in r_artists:
+                best = r
+                break
+
+        if not best:
+            best = results[0]
+
+        vid = best.get('videoId')
+        SEARCH_CACHE[query] = vid
+        return vid
+
     except Exception as e:
-        print(f"    Search error: {e}")
+        logger.warning(f"    Search error for '{title}' by '{artist}': {e}")
         return None
 
 def parse_spotify_playlist(url):
@@ -129,7 +240,6 @@ def parse_spotify_playlist(url):
         playlist_id = url.split('playlist/')[-1].split('?')[0]
         
         # Initialize Spotify client
-        # Users need to set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET env vars
         sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
         
         # Get playlist details
@@ -147,15 +257,16 @@ def parse_spotify_playlist(url):
         
         return {
             'name': playlist['name'],
+            'description': playlist.get('description', ''),
             'songs': songs
         }
     except ImportError:
-        print("ERROR: spotipy library not installed!")
-        print("Install with: pip install spotipy")
-        print("Set environment variables: SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET")
+        logger.error("ERROR: spotipy library not installed!")
+        logger.error("Install with: pip install spotipy")
+        logger.error("Set environment variables: SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET")
         return None
     except Exception as e:
-        print(f"ERROR parsing Spotify playlist: {e}")
+        logger.error(f"ERROR parsing Spotify playlist: {e}")
         return None
 
 def import_playlist_from_csv(yt, csv_file):
@@ -168,19 +279,22 @@ def import_playlist_from_csv(yt, csv_file):
     """
     playlists = {}
     
-    print(f"\nReading CSV file: {csv_file}")
+    logger.info(f"\nReading CSV file: {csv_file}")
     try:
         with open(csv_file, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             headers = reader.fieldnames or []
-            # Ensure theres always a list for membership checks
-            if headers is None:
-                headers = []
             
-            # Detect CSV format
+            # Validate CSV structure
             has_mediaid = 'MediaId' in headers
             has_playlistname = 'PlaylistName' in headers
             has_url = 'URL' in headers or 'url' in headers
+            has_title = 'Title' in headers
+            has_description = 'Description' in headers
+            
+            # Warn if missing essential columns
+            if not has_mediaid and not has_title and not has_url:
+                logger.warning("  ⚠ Warning: CSV missing Title, MediaId, or URL columns")
             
             # Determine playlist name
             if has_playlistname:
@@ -189,74 +303,104 @@ def import_playlist_from_csv(yt, csv_file):
                 # Use filename as playlist name
                 default_playlist_name = os.path.splitext(os.path.basename(csv_file))[0]
             
-            for row in reader:
-                # Get playlist name
-                if has_playlistname:
-                    pplaylist_name = (row.get('PlaylistName') or '').strip()
-                else:
-                    playlist_name = default_playlist_name
-                
-                if not playlist_name:
+            for row_num, row in enumerate(reader, start=2):  # start=2 accounts for header row
+                try:
+                    # Get playlist name and normalize
+                    if has_playlistname:
+                        playlist_name = (row.get('PlaylistName') or '').strip()
+                    else:
+                        playlist_name = default_playlist_name
+                    
+                    if not playlist_name:
+                        logger.warning(f"  ⚠ Row {row_num}: Skipping - no playlist name")
+                        continue
+                    
+                    # Get description if provided
+                    description = (row.get('Description') or '').strip() if has_description else ''
+                    
+                    # Get video ID (try multiple methods)
+                    video_id = None
+                    title = (row.get('Title') or '').strip()
+                    artists = (row.get('Artists') or row.get('Artist') or '').strip()
+                    
+                    # Method 1: Direct MediaId/VideoId
+                    if has_mediaid:
+                        video_id = (row.get('MediaId') or '').strip()
+                    elif 'VideoId' in headers:
+                        video_id = (row.get('VideoId') or '').strip()
+                    
+                    # Method 2: Parse from URL
+                    if not video_id and has_url:
+                        url = row.get('URL', '') or row.get('url', '')
+                        if url:
+                            # Extract video ID from YouTube URL
+                            match = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', url)
+                            if match:
+                                video_id = match.group(1)
+                    
+                    # Method 3: Search by title/artist (fallback)
+                    search_needed = not video_id and title
+                    
+                    if not video_id and not title:
+                        logger.warning(f"  ⚠ Row {row_num}: Skipping - no video ID or title")
+                        continue
+                    
+                    if playlist_name not in playlists:
+                        playlists[playlist_name] = {
+                            'songs': [],
+                            'description': description
+                        }
+                    
+                    playlists[playlist_name]['songs'].append({
+                        'videoId': video_id,
+                        'title': title,
+                        'artists': artists,
+                        'search_needed': search_needed,
+                        'row_num': row_num
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"  ✗ Row {row_num}: Error parsing - {e}")
                     continue
-                
-                # Get video ID (try multiple methods)
-                video_id = None
-                title = row.get('Title', '').strip()
-                artists = row.get('Artists', '').strip() or row.get('Artist', '').strip()
-                
-                # Method 1: Direct MediaId/VideoId (use .get to avoid KeyError / None.strip())
-                if has_mediaid:
-                    video_id = (row.get('MediaId') or '').strip()
-                elif 'VideoId' in headers:
-                    video_id = (row.get('VideoId') or '').strip()
-                
-                # Method 2: Parse from URL
-                if not video_id and has_url:
-                    url = row.get('URL', '') or row.get('url', '')
-                    if url:
-                        # Extract video ID from YouTube URL
-                        match = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', url)
-                        if match:
-                            video_id = match.group(1)
-                
-                # Method 3: Search by title/artist (fallback)
-                search_needed = not video_id and title
-                
-                if playlist_name not in playlists:
-                    playlists[playlist_name] = []
-                
-                playlists[playlist_name].append({
-                    'videoId': video_id,
-                    'title': title,
-                    'artists': artists,
-                    'search_needed': search_needed
-                })
         
-        print(f"✓ Found {len(playlists)} playlist(s) with {sum(len(songs) for songs in playlists.values())} total songs")
+        total_songs = sum(len(p['songs']) for p in playlists.values())
+        logger.info(f"✓ Found {len(playlists)} playlist(s) with {total_songs} total songs")
         return playlists
     
     except Exception as e:
-        print(f"ERROR reading CSV: {e}")
+        logger.error(f"ERROR reading CSV: {e}")
         import traceback
         traceback.print_exc()
         return None
 
-def import_playlist(yt, playlist_name, songs, append=True):
+@retry_on_failure()
+def add_songs_batch(yt, playlist_id, video_ids):
+    """Add a batch of songs to a playlist with retry logic."""
+    return yt.add_playlist_items(
+        playlistId=playlist_id,
+        videoIds=video_ids,
+        duplicates=False
+    )
+
+def import_playlist(yt, playlist_name, playlist_data, append=True, privacy='PRIVATE'):
     """
     Import a single playlist to YouTube Music.
     If append=True and playlist exists, adds songs to existing playlist.
     If append=False, always creates a new playlist.
     """
-    print(f"\n{'='*70}")
-    print(f"Processing: {playlist_name} ({len(songs)} songs)")
-    print('='*70)
+    songs = playlist_data.get('songs', playlist_data) if isinstance(playlist_data, dict) else playlist_data
+    description = playlist_data.get('description', '') if isinstance(playlist_data, dict) else ''
+    
+    logger.info(f"\n{'='*70}")
+    logger.info(f"Processing: {playlist_name} ({len(songs)} songs)")
+    logger.info('='*70)
     
     try:
         playlist_id = None
         
         # Check if playlist already exists (if append mode)
         if append:
-            print("  Checking for existing playlist...")
+            logger.info("  Checking for existing playlist...")
             try:
                 existing_playlists = yt.get_library_playlists(limit=None)
                 for pl in existing_playlists:
@@ -264,19 +408,24 @@ def import_playlist(yt, playlist_name, songs, append=True):
                     target_title = (playlist_name or '').strip().casefold()
                     if existing_title == target_title:
                         playlist_id = pl.get('playlistId')
-                        print(f"✓ Found existing playlist (ID: {playlist_id})")
-                        print(f"  Will append songs to existing playlist")
+                        logger.info(f"✓ Found existing playlist (ID: {playlist_id})")
+                        logger.info(f"  Will append songs to existing playlist")
                         break
             except Exception as e:
-                print(f"  Warning: Could not check for existing playlists: {e}")
+                logger.warning(f"  Warning: Could not check for existing playlists: {e}")
         
         # Create new playlist if doesn't exist
         if not playlist_id:
+            # Only add auto-description if no description provided
+            if not description:
+                description = f"" # I would rather it's blank than auto-generated
+            
             playlist_id = yt.create_playlist(
                 title=playlist_name,
-                description=f"Imported playlist - {len(songs)} songs"
+                description=description,
+                privacy_status=privacy
             )
-            print(f"✓ Created new playlist (ID: {playlist_id})")
+            logger.info(f"✓ Created new playlist (ID: {playlist_id}, Privacy: {privacy})")
         
         successful = 0
         failed = 0
@@ -284,13 +433,18 @@ def import_playlist(yt, playlist_name, songs, append=True):
         skipped = 0
         failed_songs = []
         
+        # Batch processing
+        batch = []
+        batch_size = 20
+        
         for i, song in enumerate(songs, 1):
+            row_info = f" (Row {song.get('row_num')})" if song.get('row_num') else ""
             try:
                 video_id = song['videoId']
                 
                 # If no video ID, search for it
                 if not video_id and song.get('search_needed'):
-                    print(f"  Searching: {song['title']} - {song['artists']}")
+                    logger.info(f"  Searching{row_info}: {song['title']} - {song['artists']}")
                     video_id = search_youtube_music(yt, song['title'], song['artists'])
                     searched += 1
                     
@@ -300,63 +454,76 @@ def import_playlist(yt, playlist_name, songs, append=True):
                 if not video_id:
                     raise Exception("No video ID available")
                 
-                # Add to playlist
-                result = yt.add_playlist_items(
-                    playlistId=playlist_id,
-                    videoIds=[video_id],
-                    duplicates=False
-                )
-                successful += 1
+                # Add to batch
+                batch.append(video_id)
+                
+                # Process batch when full or at end
+                if len(batch) >= batch_size or i == len(songs):
+                    try:
+                        add_songs_batch(yt, playlist_id, batch)
+                        successful += len(batch)
+                        logger.info(f"  ✓ Added batch of {len(batch)} songs")
+                        batch = []
+                        time.sleep(1)  # Rate limiting between batches
+                    except Exception as e:
+                        error_msg = str(e)
+                        # Check for success reported as error (ytmusicapi quirk)
+                        if 'STATUS_SUCCEEDED' in error_msg:
+                            successful += len(batch)
+                        # Check if songs already in playlist
+                        elif 'already' in error_msg.lower() or 'duplicate' in error_msg.lower():
+                            skipped += len(batch)
+                        else:
+                            # Batch failed, log all songs in batch
+                            for vid in batch:
+                                failed += 1
+                                matching_song = next((s for s in songs if s.get('videoId') == vid), None)
+                                if matching_song:
+                                    failed_songs.append({
+                                        'row': matching_song.get('row_num', '?'),
+                                        'title': matching_song['title'],
+                                        'artists': matching_song['artists'],
+                                        'error': error_msg
+                                    })
+                        batch = []
                 
                 # Progress indicator
-                if i % 10 == 0 or i == len(songs):
+                if i % 25 == 0 or i == len(songs):
                     status = f"  Progress: {i}/{len(songs)} songs"
                     if searched > 0:
                         status += f" ({searched} searched)"
-                    print(status)
-                
-                # Rate limiting
-                time.sleep(0.3 if not song.get('search_needed') else 0.5)
+                    logger.info(status)
                 
             except Exception as e:
                 error_msg = str(e)
-                
-                # Check for success reported as error (ytmusicapi quirk)
-                if 'STATUS_SUCCEEDED' in error_msg:
-                    successful += 1
-                # Check if song already in playlist
-                elif 'already' in error_msg.lower() or 'duplicate' in error_msg.lower():
-                    skipped += 1
-                else:
-                    failed += 1
-                    failed_songs.append({
-                        'title': song['title'],
-                        'artists': song['artists'],
-                        'error': error_msg
-                    })
-                
-                if failed > 0 and failed % 10 == 0:
-                    print(f"  ⚠ {failed} songs failed so far...")
+                failed += 1
+                failed_songs.append({
+                    'row': song.get('row_num', '?'),
+                    'title': song['title'],
+                    'artists': song['artists'],
+                    'error': error_msg
+                })
+                logger.warning(f"  ✗{row_info}: {song['title']} - {error_msg}")
         
-        print(f"\n✓ Completed '{playlist_name}'")
-        print(f"  ✓ Successfully added: {successful}/{len(songs)} songs")
+        logger.info(f"\n✓ Completed '{playlist_name}'")
+        logger.info(f"  ✓ Successfully added: {successful}/{len(songs)} songs")
         if searched > 0:
-            print(f"  🔍 Songs found by search: {searched}")
+            logger.info(f"  🔍 Songs found by search: {searched}")
         if skipped > 0:
-            print(f"  ⏭ Skipped (already in playlist): {skipped}")
+            logger.info(f"  ⏭ Skipped (already in playlist): {skipped}")
         if failed > 0:
-            print(f"  ✗ Failed: {failed} songs")
-            print(f"\nFailed songs:")
-            for fs in failed_songs[:10]:
-                print(f"  - {fs['title']} by {fs['artists']}")
-                print(f"    Error: {fs['error']}")
-            if len(failed_songs) > 10:
-                print(f"  ... and {len(failed_songs) - 10} more")
+            logger.error(f"  ✗ Failed: {failed} songs")
+            logger.error(f"\nFailed songs:")
+            for fs in failed_songs[:20]:
+                logger.error(f"  - Row {fs['row']}: {fs['title']} by {fs['artists']}")
+                logger.error(f"    Error: {fs['error']}")
+            if len(failed_songs) > 20:
+                logger.error(f"  ... and {len(failed_songs) - 20} more (see log file)")
         
         return True
         
     except Exception as e:
-        print(f"✗ ERROR processing playlist '{playlist_name}': {e}")
+        logger.error(f"✗ ERROR processing playlist '{playlist_name}': {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -383,6 +550,9 @@ EXAMPLES:
   
   # Setup authentication interactively
   python playlist_importer.py --setup
+  
+  # Create public playlist
+  python playlist_importer.py --public playlist.csv
 
 AUTHENTICATION:
   First time setup: python playlist_importer.py --setup
@@ -394,44 +564,51 @@ AUTHENTICATION:
     parser.add_argument('--setup', action='store_true', help='Run interactive authentication setup')
     parser.add_argument('--spotify', help='Import from Spotify playlist URL')
     parser.add_argument('--no-append', action='store_true', help='Always create new playlists instead of appending to existing ones')
+    parser.add_argument('--public', action='store_true', help='Create public playlists (default is private)')
+    parser.add_argument('--log', default='playlist_import.log', help='Log file path (default: playlist_import.log)')
     
     args = parser.parse_args()
     
-    # Determine append mode (default is True, unless --no-append is specified)
+    # Reinitialize logging with custom log file if specified
+    global logger
+    logger = setup_logging(args.log)
+    
+    # Determine settings
     append_mode = not args.no_append
+    privacy = 'PUBLIC' if args.public else 'PRIVATE'
     
     # Handle setup mode
     if args.setup:
         if setup_authentication():
-            print("\n✓ Setup complete! You can now import playlists.")
+            logger.info("\n✓ Setup complete! You can now import playlists.")
         else:
-            print("\n✗ Setup failed. Please try again.")
+            logger.error("\n✗ Setup failed. Please try again.")
         return
     
     # Check for authentication
     if not os.path.exists('browser.json'):
-        print("ERROR: browser.json not found!")
-        print("\nRun authentication setup first:")
-        print("  python playlist_importer.py --setup")
-        print("\nOr manually run: ytmusicapi browser")
+        logger.error("ERROR: browser.json not found!")
+        logger.error("\nRun authentication setup first:")
+        logger.error("  python playlist_importer.py --setup")
+        logger.error("\nOr manually run: ytmusicapi browser")
         sys.exit(1)
     
     # Initialize YouTube Music client
     try:
         yt = YTMusic('browser.json')
-        print("✓ Successfully authenticated with YouTube Music")
+        logger.info("✓ Successfully authenticated with YouTube Music")
     except Exception as e:
-        print(f"ERROR initializing YouTube Music: {e}")
-        print("\nTry running authentication setup again:")
-        print("  python playlist_importer.py --setup")
+        logger.error(f"ERROR initializing YouTube Music: {e}")
+        logger.error("\nTry running authentication setup again:")
+        logger.error("  python playlist_importer.py --setup")
         sys.exit(1)
     
     # Handle Spotify import
     if args.spotify:
-        print(f"\nImporting from Spotify: {args.spotify}")
+        logger.info(f"\nImporting from Spotify: {args.spotify}")
         playlist_data = parse_spotify_playlist(args.spotify)
         if playlist_data:
-            import_playlist(yt, playlist_data['name'], playlist_data['songs'], append=append_mode)
+            import_playlist(yt, playlist_data['name'], playlist_data, append=append_mode, privacy=privacy)
         return
     
     # Handle CSV imports
@@ -451,31 +628,33 @@ AUTHENTICATION:
             csv_files.extend(glob.glob(arg))
     
     if not csv_files:
-        print("ERROR: No CSV files found!")
+        logger.error("ERROR: No CSV files found!")
         sys.exit(1)
     
-    print(f"\n{'='*70}")
-    print(f"Found {len(csv_files)} CSV file(s) to import")
-    print('='*70)
+    logger.info(f"\n{'='*70}")
+    logger.info(f"Found {len(csv_files)} CSV file(s) to import")
+    logger.info(f"Privacy: {privacy}, Append mode: {append_mode}")
+    logger.info('='*70)
     for f in csv_files:
-        print(f"  - {f}")
+        logger.info(f"  - {f}")
     
     # Process each CSV file
     total_playlists = 0
     for i, csv_file in enumerate(csv_files, 1):
-        print(f"\n{'#'*70}")
-        print(f"# Processing file {i}/{len(csv_files)}: {os.path.basename(csv_file)}")
-        print(f"{'#'*70}")
+        logger.info(f"\n{'#'*70}")
+        logger.info(f"# Processing file {i}/{len(csv_files)}: {os.path.basename(csv_file)}")
+        logger.info(f"{'#'*70}")
         
         playlists = import_playlist_from_csv(yt, csv_file)
         if playlists:
-            for playlist_name, songs in playlists.items():
-                if import_playlist(yt, playlist_name, songs, append=append_mode):
+            for playlist_name, playlist_data in playlists.items():
+                if import_playlist(yt, playlist_name, playlist_data, append=append_mode, privacy=privacy):
                     total_playlists += 1
     
-    print("\n" + "="*70)
-    print(f"ALL COMPLETE - Imported {total_playlists} playlists from {len(csv_files)} file(s)")
-    print("="*70)
+    logger.info("\n" + "="*70)
+    logger.info(f"ALL COMPLETE - Imported {total_playlists} playlists from {len(csv_files)} file(s)")
+    logger.info(f"Detailed log saved to: {args.log}")
+    logger.info("="*70)
 
 if __name__ == "__main__":
     main()

@@ -7,6 +7,7 @@ import re
 import logging
 from functools import wraps
 from ytmusicapi import YTMusic
+from difflib import SequenceMatcher
 
 # Security warning
 SECURITY_WARNING = """
@@ -184,9 +185,14 @@ def normalize_for_search(title, artist):
 @retry_on_failure()
 def search_youtube_music(yt, title, artist):
     """
-    Search YouTube Music for a song by title and artist.
-    Uses an in-memory cache for the normalized query to avoid duplicate searches during a run.
-    Attempts to pick a result that best matches title/artist before falling back to first result.
+    Search YouTube Music for a song by title and artist with improved matching.
+
+    Scoring rules (simple heuristic):
+    - Title similarity (SequenceMatcher) is the primary factor.
+    - Artist token overlap increases score.
+    - Small boosts if normalized title/artist are substrings of the result.
+    - Prefer results with a videoId and return the highest scoring candidate.
+    - Results are cached in-memory per normalized query.
     """
     try:
         query = normalize_for_search(title, artist)
@@ -197,31 +203,72 @@ def search_youtube_music(yt, title, artist):
         if query in SEARCH_CACHE:
             return SEARCH_CACHE[query]
 
-        results = yt.search(query, filter='songs', limit=5)
+        # Ask for more results to have better candidates
+        results = yt.search(query, filter='songs', limit=10)
         if not results:
             SEARCH_CACHE[query] = None
             return None
 
-        # Try to prefer results that contain title or artist tokens (simple heuristic)
-        norm_title = (title or '').casefold()
-        norm_artist = (artist or '').casefold()
+        def norm_text(s: str) -> str:
+            # lowercase, strip, remove non-alphanum (keep spaces), collapse whitespace
+            s = (s or '').casefold()
+            s = re.sub(r'[^a-z0-9\s]', ' ', s)
+            s = ' '.join(s.split())
+            return s
+
+        norm_title = norm_text(title)
+        norm_artist = norm_text(artist)
+
         best = None
+        best_score = -1.0
+
         for r in results:
-            r_title = (r.get('title') or '').casefold()
-            r_artists = ' '.join((a.get('name') for a in r.get('artists', []) if a.get('name'))).casefold()
-            if norm_title and norm_title in r_title:
-                best = r
-                break
-            if norm_artist and norm_artist in r_artists:
-                best = r
-                break
+            r_title = r.get('title') or ''
+            r_artists = ' '.join((a.get('name') for a in r.get('artists', []) if a.get('name')))
+            r_title_n = norm_text(r_title)
+            r_artists_n = norm_text(r_artists)
 
-        if not best:
-            best = results[0]
+            # Title similarity (primary)
+            title_score = SequenceMatcher(None, norm_title, r_title_n).ratio() if norm_title else 0.0
 
-        vid = best.get('videoId')
-        SEARCH_CACHE[query] = vid
-        return vid
+            # Artist overlap (token intersection / max token count)
+            artist_score = 0.0
+            if norm_artist:
+                t_tokens = set(norm_artist.split())
+                a_tokens = set(r_artists_n.split())
+                if t_tokens and a_tokens:
+                    artist_score = len(t_tokens & a_tokens) / max(len(t_tokens), len(a_tokens))
+
+            # Substring boosts (helpful for quoted-title queries)
+            boost = 0.0
+            if norm_title and norm_title in r_title_n:
+                boost += 0.12
+            if norm_artist and norm_artist in r_artists_n:
+                boost += 0.08
+
+            # Combine scores (weights chosen conservatively)
+            score = (0.78 * title_score) + (0.22 * artist_score) + boost
+
+            # Penalize items missing videoId
+            if not r.get('videoId'):
+                score *= 0.85
+
+            # Slight preference for results that include both title and artist tokens
+            if title_score > 0.9 and artist_score > 0.5:
+                score += 0.05
+
+            if score > best_score:
+                best_score = score
+                best = r
+
+        if best:
+            vid = best.get('videoId')
+            SEARCH_CACHE[query] = vid
+            logger.info(f"    Best match: {best.get('title')} - {', '.join((a.get('name') for a in best.get('artists', []) if a.get('name')))} (score={best_score:.2f})")
+            return vid
+
+        SEARCH_CACHE[query] = None
+        return None
 
     except Exception as e:
         logger.warning(f"    Search error for '{title}' by '{artist}': {e}")

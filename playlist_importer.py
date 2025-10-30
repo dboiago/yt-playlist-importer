@@ -5,6 +5,7 @@ import sys
 import time
 import re
 import logging
+import urllib.error
 from functools import wraps
 from ytmusicapi import YTMusic
 from difflib import SequenceMatcher
@@ -63,14 +64,17 @@ def retry_on_failure(max_attempts=3, backoff=2):
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
-                    # Retry on requests network/connection/timeout errors
-                    retryable = False
-                    if isinstance(e, requests.exceptions.RequestException):
-                        retryable = True
-                    # If exception has 'response' with status_code, treat 5xx as retryable
-                    resp = getattr(e, 'response', None)
-                    if resp is not None and getattr(resp, 'status_code', 0) >= 500:
-                        retryable = True
+                    error_str = str(e).lower()
+                    error_type = type(e).__name__.lower()
+                    
+                    # Check for retryable conditions
+                    retryable = (
+                        'timeout' in error_str or
+                        'connection' in error_str or
+                        'network' in error_str or
+                        '5' in error_str or
+                        hasattr(e, 'response') and getattr(e.response, 'status_code', 0) >= 500
+                    )
 
                     if not retryable or attempt == max_attempts:
                         # final attempt or non-retryable -> raise
@@ -182,8 +186,36 @@ def normalize_for_search(title, artist):
         return artist
     return ''
 
+# Simple search option - works well for most cases
 @retry_on_failure()
-def search_youtube_music(yt, title, artist):
+def search_youtube_music_simple(yt, title, artist):
+    """
+    Simple search - just return first result.
+    Kept for reference/rollback if advanced matching has issues.
+    """
+    try:
+        query = normalize_for_search(title, artist)
+        if not query:
+            return None
+        
+        if query in SEARCH_CACHE:
+            return SEARCH_CACHE[query]
+        
+        results = yt.search(query, filter='songs', limit=5)
+        if not results:
+            SEARCH_CACHE[query] = None
+            return None
+        
+        vid = results[0].get('videoId')
+        SEARCH_CACHE[query] = vid
+        return vid
+    except Exception as e:
+        logger.warning(f"    Search error for '{title}' by '{artist}': {e}")
+        return None
+
+# Added more advanced search option with scoring due to niche music matches
+@retry_on_failure()
+def search_youtube_music_advanced(yt, title, artist):
     """
     Search YouTube Music for a song by title and artist with improved matching.
 
@@ -273,6 +305,13 @@ def search_youtube_music(yt, title, artist):
     except Exception as e:
         logger.warning(f"    Search error for '{title}' by '{artist}': {e}")
         return None
+    
+# Choose the search to use:
+# Use the advanced version
+search_youtube_music = search_youtube_music_advanced
+
+# Or to use the simple version
+# search_youtube_music = search_youtube_music_simple
 
 def parse_spotify_playlist(url):
     """

@@ -477,7 +477,7 @@ def import_playlist(yt, playlist_name, playlist_data, append=True, privacy='PRIV
     songs = playlist_data.get('songs', playlist_data) if isinstance(playlist_data, dict) else playlist_data
     description = playlist_data.get('description', '') if isinstance(playlist_data, dict) else ''
     
-    logger.info(f"\n{'='*70}")
+    logger.info('='*70)
     logger.info(f"Processing: {playlist_name} ({len(songs)} songs)")
     logger.info('='*70)
     
@@ -678,7 +678,47 @@ AUTHENTICATION:
         logger.error("  python playlist_importer.py --setup")
         logger.error("\nOr manually run: ytmusicapi browser")
         sys.exit(1)
-    
+
+    # Validate browser.json contents and add sane defaults if needed
+    try:
+        with open('browser.json', 'r', encoding='utf-8') as f:
+            headers = json.load(f)
+    except Exception as e:
+        logger.error(f"ERROR reading browser.json: {e}")
+        logger.error("Try re-running: python playlist_importer.py --setup")
+        sys.exit(1)
+
+    # Ensure Cookie contains SAPISID (required)
+    cookie = headers.get('Cookie') or headers.get('cookie') or ''
+    if 'SAPISID' not in cookie:
+        logger.error("ERROR: browser.json missing SAPISID cookie value.")
+        logger.error("Re-run setup: python playlist_importer.py --setup or run: ytmusicapi browser")
+        sys.exit(1)
+
+    # Ensure origin/Origin exists and is a string (ytmusicapi needs this)
+    changed = False
+    if not headers.get('Origin') and not headers.get('origin'):
+        headers['Origin'] = 'https://music.youtube.com'
+        headers['origin'] = 'https://music.youtube.com'
+        changed = True
+
+    # Normalize None -> '' and non-str to str to avoid TypeErrors in ytmusicapi
+    for k, v in list(headers.items()):
+        if v is None:
+            headers[k] = ''
+            changed = True
+        elif not isinstance(v, str):
+            headers[k] = str(v)
+            changed = True
+
+    if changed:
+        try:
+            with open('browser.json', 'w', encoding='utf-8') as f:
+                json.dump(headers, f, indent=2)
+            logger.info("Updated browser.json with defaults (Origin) to avoid missing-value errors.")
+        except Exception as e:
+            logger.warning(f"Could not update browser.json: {e} (continuing with in-memory defaults)")
+
     # Initialize YouTube Music client
     try:
         yt = YTMusic('browser.json')
@@ -727,7 +767,7 @@ AUTHENTICATION:
     # Process each CSV file
     total_playlists = 0
     for i, csv_file in enumerate(csv_files, 1):
-        logger.info(f"\n{'#'*70}")
+        logger.info('#'*70)
         logger.info(f"# Processing file {i}/{len(csv_files)}: {os.path.basename(csv_file)}")
         logger.info(f"{'#'*70}")
         
@@ -737,7 +777,7 @@ AUTHENTICATION:
                 if import_playlist(yt, playlist_name, playlist_data, append=append_mode, privacy=privacy):
                     total_playlists += 1
     
-    logger.info("\n" + "="*70)
+    logger.info("="*70)
     logger.info(f"ALL COMPLETE - Imported {total_playlists} playlists from {len(csv_files)} file(s)")
     logger.info(f"Detailed log saved to: {args.log}")
     logger.info("="*70)

@@ -117,8 +117,16 @@ This creates browser.json in the current directory.
     Open the app details — you'll see Client ID and Client Secret; Copy both
     Set a Redirect URI (http://127.0.0.1:8888/callback)
     Do NOT commit Client Secret to git
+    
+    Unix:
     export SPOTIPY_CLIENT_ID='your_client_id'
     export SPOTIPY_CLIENT_SECRET='your_client_secret'
+    
+    Windows:
+    setx SPOTIPY_CLIENT_ID "your_client_id"
+    setx SPOTIPY_CLIENT_SECRET "your_client_secret"
+    close and reopen the shell for setx to take effect
+
     python playlist_importer.py --spotify "https://open.spotify.com/playlist/..."
     ```
 
@@ -155,6 +163,28 @@ optional arguments:
   --spotify SPOTIFY    Import from Spotify playlist URL
   --no-append          Always create new playlists instead of appending
 ```
+
+## Exporting
+
+Export a CSV
+- Export a single playlist by name (case-insensitive; exact or substring match):
+  ```bash
+  python playlist_exporter.py --name "My Playlist"
+  ```
+- Export all playlists:
+  ```bash
+  python playlist_exporter.py --all
+  ```
+- Export to a specific directory (default: current directory):
+  ```bash
+  python playlist_exporter.py --all --out "./exports"
+  ```
+- Create `browser.json` interactively (paste DevTools request headers):
+  ```bash
+  python playlist_exporter.py --setup
+  ```
+
+
 
 ## Behavior notes & troubleshooting
 - Authentication Issues

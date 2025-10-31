@@ -104,7 +104,7 @@ def setup_authentication():
     print("6. Find a request to 'music.youtube.com/youtubei/v1/browse'")
     print("7. Right-click → Copy → Copy Request Headers")
     print("\nPaste the request headers below:")
-    print("(Press Ctrl+D or Ctrl+Z (Windows) when done)\n")
+    print("(Press Ctrl+D (Unix) or Ctrl+Z (Windows) when done then Enter)\n")
     
     lines = []
     try:
@@ -321,38 +321,65 @@ def parse_spotify_playlist(url):
     try:
         import spotipy
         from spotipy.oauth2 import SpotifyClientCredentials
-        
-        # Extract playlist ID from URL
-        playlist_id = url.split('playlist/')[-1].split('?')[0]
-        
-        # Initialize Spotify client
+    except ImportError:
+        logger.error("ERROR: spotipy library not installed! Install with: pip install spotipy")
+        return None
+
+    # Extract playlist ID from URL
+    playlist_id = url.split('playlist/')[-1].split('?')[0]
+
+    try:
         sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
-        
-        # Get playlist details
-        playlist = sp.playlist(playlist_id)
-        
-        songs = []
-        for item in playlist['tracks']['items']:
-            track = item['track']
-            if track:
-                songs.append({
-                    'title': track['name'],
-                    'artists': ', '.join([artist['name'] for artist in track['artists']]),
-                    'videoId': None  # Will search for this
-                })
-        
+    except Exception as e:
+        logger.error(f"ERROR initializing Spotify client: {e}")
+        logger.error("Make sure SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET are set as environment variables.")
+        return None
+
+    try:
+        # Fetch playlist metadata
+        playlist_meta = sp.playlist(playlist_id)
+    except Exception as e:
+        logger.error(f"ERROR fetching Spotify playlist metadata: {e}")
+        return None
+
+    songs = []
+    try:
+        # Fetch all playlist items (handle pagination)
+        items = []
+        resp = sp.playlist_items(playlist_id, limit=100)
+        while resp:
+            items.extend(resp.get('items', []))
+            if resp.get('next'):
+                resp = sp.next(resp)
+            else:
+                break
+
+        for item in items:
+            track = item.get('track')
+            # Skip if track is missing (deleted or unavailable)
+            if not track:
+                logger.warning("  ✗ Skipping unavailable track (missing track object)")
+                continue
+
+            title = track.get('name') or ''
+            # join artist names safely
+            artists = ', '.join([a.get('name') for a in track.get('artists', []) if a.get('name')]) if track.get('artists') else ''
+            # If there's an explicit external URL/id you could try to map it, but we fallback to search
+            songs.append({
+                'title': title,
+                'artists': artists,
+                'videoId': None,
+                'search_needed': bool(title),
+            })
+
         return {
-            'name': playlist['name'],
-            'description': playlist.get('description', ''),
+            'name': playlist_meta.get('name', f"spotify_{playlist_id}"),
+            'description': playlist_meta.get('description', '') or '',
             'songs': songs
         }
-    except ImportError:
-        logger.error("ERROR: spotipy library not installed!")
-        logger.error("Install with: pip install spotipy")
-        logger.error("Set environment variables: SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET")
-        return None
+
     except Exception as e:
-        logger.error(f"ERROR parsing Spotify playlist: {e}")
+        logger.error(f"ERROR parsing Spotify playlist items: {e}")
         return None
 
 def import_playlist_from_csv(yt, csv_file):

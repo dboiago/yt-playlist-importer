@@ -112,6 +112,11 @@ This creates browser.json in the current directory.
 ## Import from Spotify
 - Requires SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET environment variables
     ```text
+    Go to https://developer.spotify.com/dashboard/ and log in with your Spotify account
+    Click "Create App", give it a name/description, accept terms, etc
+    Open the app details — you'll see Client ID and Client Secret; Copy both
+    Set a Redirect URI (http://127.0.0.1:8888/callback)
+    Do NOT commit Client Secret to git
     export SPOTIPY_CLIENT_ID='your_client_id'
     export SPOTIPY_CLIENT_SECRET='your_client_secret'
     python playlist_importer.py --spotify "https://open.spotify.com/playlist/..."
